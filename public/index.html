@@ -1,0 +1,76 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Referee Translator</title><style>
+*{box-sizing:border-box}body{margin:0;height:100dvh;display:flex;flex-direction:column;font-family:system-ui;background:#111;color:#eee}
+.half{flex:1;display:flex;flex-direction:column;padding:14px;gap:8px;border:4px solid transparent;transition:.2s}
+#es{transform:rotate(180deg);background:#1b2a3a}#en{background:#2a1b2b}
+.half.turn{border-color:#3f6}.half.speaking{border-color:#fc3}
+.lbl{font-size:14px;opacity:.7}.txt{flex:1;font-size:24px;overflow:auto}.live{font-size:16px;opacity:.6;min-height:1.2em}
+.row{display:flex;gap:8px}button{flex:1;font-size:18px;padding:14px;border:0;border-radius:12px;background:#444;color:#fff}
+button.go{background:#2a7}button.done{background:#c63}
+#bar{padding:6px;text-align:center;font-size:14px;background:#000}
+</style></head><body>
+<div id="setup" style="position:fixed;inset:0;background:#111;z-index:9;padding:20px;display:flex;flex-direction:column;gap:12px;font-size:18px">
+<h2 style="margin:0">Referee setup</h2>
+<label>Host trigger word <input id="hw" value="Brock"></label>
+<label>Host language <select id="hl"><option value="en">English</option><option value="es">Español</option></select></label>
+<label>Guest trigger word / palabra clave <input id="gw" value="Biscuit"></label>
+<label>Guest language <select id="gl"><option value="es">Español</option><option value="en">English</option></select></label>
+<small>Start each turn by saying your trigger word, e.g. "Brock, where is the station?". Speech without a trigger word is ignored.</small>
+<button class="go" id="startBtn">Start conversation</button></div>
+<style>input,select{font-size:18px;padding:8px;width:100%}</style>
+<div class="half" id="es"><div class="lbl">ESPAÑOL — <span class="st"></span></div><div class="txt"></div><div class="live"></div>
+<div class="row"><button class="go" data-l="es">🎤 Hablar</button><button class="done">✓ Listo</button></div></div>
+<div id="bar">Tap a mic to start. Referee waits 1.5s of silence (or ✓) before translating.</div>
+<div class="half" id="en"><div class="lbl">ENGLISH — <span class="st"></span></div><div class="txt"></div><div class="live"></div>
+<div class="row"><button class="go" data-l="en">🎤 Speak</button><button class="done">✓ Done</button></div></div>
+<script>
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition,$=s=>document.querySelector(s),bar=$('#bar');
+const SIL=1500,P={en:$('#en'),es:$('#es')};const BCP={en:'en-US',es:'es-ES'};
+let people=[],rec=null,recLang='en',speaker=null,buf='',timer=null,busy=false,manual=false,expectNext=null;
+const norm=s=>s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]/g,' ').trim();
+function lev(a,b){const d=[...Array(b.length+1).keys()];for(let i=1;i<=a.length;i++){let p=d[0];d[0]=i;for(let j=1;j<=b.length;j++){const t=d[j];d[j]=Math.min(d[j]+1,d[j-1]+1,p+(a[i-1]==b[j-1]?0:1));p=t}}return d[b.length]}
+// returns {person, rest} if utterance starts with a trigger word (fuzzy)
+function matchTrigger(text){const w=norm(text).split(/\s+/);let best=null;
+ for(const p of people){const tw=norm(p.word).split(/\s+/),n=tw.length,tol=Math.max(1,Math.floor(tw.join('').length/4));
+  for(const k of [n,n+1,n-1].filter(x=>x>0)){for(let off=0;off<=1;off++){ // allow 1 filler word ("hey")
+   const cand=w.slice(off,off+k).join('');const d=lev(cand,tw.join(''));
+   if(d<=tol&&(!best||d<best.d))best={person:p,d,rest:text.trim().split(/\s+/).slice(off+k).join(' ')}}}}
+ return best}
+function setState(){for(const l of['en','es']){const p=people.find(x=>x.lang===l);P[l].classList.toggle('turn',speaker===p&&!busy);
+ P[l].querySelector('.st').textContent=busy?(l==='en'?'wait…':'espere…'):speaker===p?(l==='en'?'YOUR TURN':'SU TURNO'):p?`say "${p.word}"`:''}}
+function listen(lang){stopRec();recLang=lang;rec=new SR();rec.lang=BCP[lang];rec.continuous=true;rec.interimResults=true;
+ rec.onresult=onResult;rec.onend=()=>{if(rec&&!busy)setTimeout(()=>{try{rec.start()}catch(e){}},100)};
+ rec.onerror=e=>{if(e.error==='not-allowed')bar.textContent='Microphone blocked — allow mic access.'};try{rec.start()}catch(e){}}
+function stopRec(){if(rec){const r=rec;rec=null;r.onend=null;try{r.abort()}catch(e){}}}
+function onResult(e){if(busy)return;let fin='',interim='';for(let i=e.resultIndex;i<e.results.length;i++){const r=e.results[i];if(r.isFinal)fin+=r[0].transcript+' ';else interim+=r[0].transcript}
+ if(!speaker){const t=(fin+interim).trim();const m=matchTrigger(t);if(!m){if(fin)bar.textContent='(ignored — no trigger word)';return}
+  speaker=m.person;buf='';setState();bar.textContent=`Heard "${speaker.word}" → listening…`;
+  if(speaker.lang!==recLang){listen(speaker.lang);armTimer(3000);return} // switch recognizer to speaker's language
+  if(fin){buf=m.rest+' '}else{buf='';speaker._pendingStrip=true}
+ }else{if(speaker._pendingStrip&&fin){const m=matchTrigger(fin);buf+=(m?m.rest:fin)+' ';speaker._pendingStrip=false}else buf+=fin}
+ P[speaker.lang].querySelector('.live').textContent=buf+(fin?'':interim);armTimer(SIL)}
+function armTimer(ms){clearTimeout(timer);timer=setTimeout(finish,ms)}
+async function finish(){clearTimeout(timer);const p=speaker;const text=buf.trim();speaker=null;buf='';if(!p)return;
+ P[p.lang].querySelector('.live').textContent='';if(!text){setState();return}
+ busy=true;stopRec();setState();bar.textContent='Referee translating…';
+ try{const r=await fetch('/api/translate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text,hint:p.lang,from:p.lang})});const j=await r.json();if(j.error)throw j.error;
+  const other=people.find(x=>x!==p)||{lang:j.to};
+  P[p.lang].querySelector('.txt').textContent=text;P[other.lang].querySelector('.txt').textContent=j.text;
+  P[other.lang].classList.add('speaking');bar.textContent='Speaking translation — mic paused';await speak(j.text,other.lang);P[other.lang].classList.remove('speaking');
+  bar.textContent=`Say a trigger word: "${people[0].word}" or "${people[1].word}"`;expectNext=other;
+ }catch(e){bar.textContent='Translation error: '+e}
+ busy=false;setState();listen((expectNext||people[0]).lang)}
+function speak(t,l){return new Promise(res=>{const u=new SpeechSynthesisUtterance(t);u.lang=BCP[l];
+ const v=speechSynthesis.getVoices().find(v=>v.lang.startsWith(l));if(v)u.voice=v;let d=false;const f=()=>{if(!d){d=true;setTimeout(res,400)}};
+ u.onend=f;u.onerror=f;setTimeout(f,1500+t.length*120);speechSynthesis.cancel();speechSynthesis.speak(u)})}
+// manual fallback: tap mic = that side's person speaks now (no trigger needed); tap done = end turn
+document.querySelectorAll('.go[data-l]').forEach(b=>b.onclick=()=>{if(busy)return;const p=people.find(x=>x.lang===b.dataset.l);if(!p)return;
+ speaker=p;buf='';speaker._pendingStrip=false;if(recLang!==p.lang)listen(p.lang);setState();bar.textContent='Manual: listening…'});
+document.querySelectorAll('.done').forEach(b=>b.onclick=()=>finish());
+$('#startBtn').onclick=()=>{if(!SR){alert('Speech recognition not supported here. Use Chrome or Safari.');}
+ people=[{role:'host',word:$('#hw').value.trim(),lang:$('#hl').value},{role:'guest',word:$('#gw').value.trim(),lang:$('#gl').value}];
+ if(people[0].lang===people[1].lang){alert('Pick different languages');return}
+ localStorage.hostWord=people[0].word;speechSynthesis.speak(new SpeechSynthesisUtterance(''));// unlock TTS on iOS
+ $('#setup').style.display='none';bar.textContent=`Say "${people[0].word}…" or "${people[1].word}…" to talk`;setState();if(SR)listen(people[0].lang)};
+if(localStorage.hostWord)$('#hw').value=localStorage.hostWord;
+</script></body></html>
